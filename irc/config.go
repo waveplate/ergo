@@ -627,14 +627,14 @@ type Config struct {
 		capValues                caps.Values
 		Casemapping              i18n.Casemapping
 		AllowedCharacters        AllowedCharactersConfig `yaml:"allowed-characters"`
-		EnforceUtf8              bool                `yaml:"enforce-utf8"`
-		OutputPath               string              `yaml:"output-path"`
-		IPCheckScript            IPCheckScriptConfig `yaml:"ip-check-script"`
-		OverrideServicesHostname string              `yaml:"override-services-hostname"`
-		MaxLineLen               int                 `yaml:"max-line-len"`
-		SuppressLusers           bool                `yaml:"suppress-lusers"`
-		AdditionalISupport       map[string]string   `yaml:"additional-isupport"`
-		CommandAliases           map[string]string   `yaml:"command-aliases"`
+		EnforceUtf8              bool                    `yaml:"enforce-utf8"`
+		OutputPath               string                  `yaml:"output-path"`
+		IPCheckScript            IPCheckScriptConfig     `yaml:"ip-check-script"`
+		OverrideServicesHostname string                  `yaml:"override-services-hostname"`
+		MaxLineLen               int                     `yaml:"max-line-len"`
+		SuppressLusers           bool                    `yaml:"suppress-lusers"`
+		AdditionalISupport       map[string]string       `yaml:"additional-isupport"`
+		CommandAliases           map[string]string       `yaml:"command-aliases"`
 	}
 
 	API struct {

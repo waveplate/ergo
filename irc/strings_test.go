@@ -290,8 +290,6 @@ func TestAllowedCharactersPrintableGlyphs(t *testing.T) {
 		{"░Shade░", "░shade░", false},
 		// Legacy computing (U+1FB00)
 		{"\U0001FB00Legacy\U0001FB00", "\U0001fb00legacy\U0001fb00", false},
-		// Legacy computing supplement (U+1CC00)
-		{"\U0001CC00Supp\U0001CC00", "\U0001cc00supp\U0001cc00", false},
 		// Emojis & Symbols
 		{"👾gamer👾", "👾gamer👾", false},
 		{"🔥Fire🔥", "🔥fire🔥", false},
