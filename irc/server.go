@@ -719,6 +719,7 @@ func (server *Server) applyConfig(config *Config) (err error) {
 		server.nameCasefolded = config.Server.nameCasefolded
 		globalCasemappingSetting = config.Server.Casemapping
 		globalUtf8EnforcementSetting = config.Server.EnforceUtf8
+		globalAllowedCharacters = config.Server.AllowedCharacters
 		MaxLineLen = config.Server.MaxLineLen
 		RegisterTimeout = config.Server.IdleTimeouts.Registration
 		PingTimeout = config.Server.IdleTimeouts.Ping
@@ -733,6 +734,8 @@ func (server *Server) applyConfig(config *Config) (err error) {
 			return fmt.Errorf("Casemapping cannot be changed after launching the server, rehash aborted")
 		} else if globalUtf8EnforcementSetting != config.Server.EnforceUtf8 {
 			return fmt.Errorf("UTF-8 enforcement cannot be changed after launching the server, rehash aborted")
+		} else if oldConfig.Server.AllowedCharacters != config.Server.AllowedCharacters {
+			return fmt.Errorf("Cannot change allowed-characters after launching the server, rehash aborted")
 		} else if oldConfig.Accounts.Multiclient.AlwaysOn != config.Accounts.Multiclient.AlwaysOn {
 			return fmt.Errorf("Default always-on setting cannot be changed after launching the server, rehash aborted")
 		} else if oldConfig.Server.Relaymsg.Enabled != config.Server.Relaymsg.Enabled {

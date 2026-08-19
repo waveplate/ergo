@@ -28,7 +28,7 @@ const (
 var (
 	// reviving the old ergonomadic nickname regex:
 	// in permissive mode, allow arbitrary letters, numbers, punctuation, and symbols
-	permissiveCharsRegex = regexp.MustCompile(`^[\pL\pN\pP\pS]*$`)
+	permissiveCharsRegex = regexp.MustCompile(`^[\pL\pN\pP\pS\pM]*$`)
 )
 
 // String Errors

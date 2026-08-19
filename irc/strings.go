@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ergochat/irc-go/ircfmt"
+
 	"github.com/ergochat/ergo/irc/i18n"
 	"github.com/ergochat/ergo/irc/utils"
 )
@@ -32,6 +34,29 @@ const (
 	disfavoredNameCharacters = `<>'";#`
 )
 
+type AllowedCharactersConfig struct {
+	IRCFormatting   bool `yaml:"irc-formatting"`
+	PrintableGlyphs bool `yaml:"printable-glyphs"`
+}
+
+var globalAllowedCharacters AllowedCharactersConfig
+
+func containsDisallowedControlChars(str string, allowIRCFormatting bool) bool {
+	for i := 0; i < len(str); i++ {
+		b := str[i]
+		if b < 32 || b == 127 {
+			if allowIRCFormatting {
+				switch b {
+				case 0x02, 0x03, 0x04, 0x0F, 0x11, 0x16, 0x1D, 0x1E, 0x1F:
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // XXX this is a global variable without explicit synchronization.
 // it gets set during the initial Server.applyConfig and cannot be changed by rehash:
 // this happens-before all IRC connections and all casefolding operations.
@@ -45,7 +70,14 @@ var globalUtf8EnforcementSetting bool
 
 // Casefold returns a casefolded string, without doing any name or channel character checks.
 func Casefold(str string) (string, error) {
-	return i18n.CasefoldWithSetting(str, globalCasemappingSetting)
+	if globalAllowedCharacters.IRCFormatting {
+		str = ircfmt.Strip(str)
+	}
+	res, err := i18n.CasefoldWithSetting(str, globalCasemappingSetting)
+	if err != nil && globalAllowedCharacters.PrintableGlyphs {
+		res, err = i18n.CasefoldWithSetting(str, i18n.CasemappingPermissive)
+	}
+	return res, err
 }
 
 // CasefoldChannel returns a casefolded version of a channel name.
@@ -82,6 +114,10 @@ func CasefoldChannel(name string) (string, error) {
 
 // CasefoldName returns a casefolded version of a nick/user name.
 func CasefoldName(name string) (string, error) {
+	if containsDisallowedControlChars(name, globalAllowedCharacters.IRCFormatting) {
+		return "", errInvalidCharacter
+	}
+
 	lowered, err := Casefold(name)
 
 	if err != nil {
@@ -140,6 +176,9 @@ func isIdent(name string) bool {
 // Skeleton produces a canonicalized identifier that tries to catch
 // homoglyphic / confusable identifiers.
 func Skeleton(name string) (string, error) {
+	if globalAllowedCharacters.IRCFormatting {
+		name = ircfmt.Strip(name)
+	}
 	switch globalCasemappingSetting {
 	default:
 		return i18n.Skeleton(name)

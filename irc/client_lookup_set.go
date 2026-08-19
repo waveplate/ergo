@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ergochat/irc-go/ircfmt"
+
 	"github.com/ergochat/ergo/irc/caps"
 	"github.com/ergochat/ergo/irc/modes"
 	"github.com/ergochat/ergo/irc/utils"
@@ -99,11 +101,15 @@ func (clients *ClientManager) SetNick(client *Client, session *Session, newNick 
 	// these restrictions have grandfather exceptions for nicknames registered
 	// on previous versions of Ergo:
 	if newNick != accountName {
+		plainNick := newNick
+		if globalAllowedCharacters.IRCFormatting {
+			plainNick = ircfmt.Strip(newNick)
+		}
 		// can't contain "disfavored" characters like <, or start with a $ because
 		// it collides with the massmessage mask syntax. '0' conflicts with the use of 0
 		// as a placeholder in WHOX (#1896):
-		if strings.ContainsAny(newNick, disfavoredNameCharacters) || strings.HasPrefix(newNick, "$") ||
-			newNick == "0" {
+		if strings.ContainsAny(newNick, disfavoredNameCharacters) || strings.HasPrefix(plainNick, "$") ||
+			plainNick == "0" {
 			return "", errNicknameInvalid, false
 		}
 	}

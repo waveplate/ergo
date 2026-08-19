@@ -220,3 +220,93 @@ func TestCanonicalizeMaskWildcard(t *testing.T) {
 		tester("РОТАТО!Potato", "ротато!potato@*", nil)
 	}
 }
+
+func TestAllowedCharactersIRCFormatting(t *testing.T) {
+	oldAllowed := globalAllowedCharacters
+	t.Cleanup(func() {
+		globalAllowedCharacters = oldAllowed
+	})
+
+	globalAllowedCharacters = AllowedCharactersConfig{
+		IRCFormatting: true,
+	}
+
+	testCases := []struct {
+		input  string
+		folded string
+		err    bool
+	}{
+		{"\x02bold\x02", "bold", false},
+		{"\x0304,01red\x0f", "red", false},
+		{"\x1ditalic\x1d", "italic", false},
+		{"\x1funderline\x1f", "underline", false},
+		{"\x16reverse\x16", "reverse", false},
+		{"\x11monospace\x11", "monospace", false},
+		{"\x1estrike\x1e", "strike", false},
+		{"\x02\x0304Mixed\x0f\x02", "mixed", false},
+		// only formatting codes, no text -> empty string error
+		{"\x02\x02", "", true},
+		{"\x0304\x0f", "", true},
+		// disallowed control characters
+		{"\x07bell", "", true},
+		{"\x1bescape", "", true},
+		{"tab\tcharacter", "", true},
+		{"null\x00byte", "", true},
+	}
+
+	for _, tt := range testCases {
+		res, err := CasefoldName(tt.input)
+		if tt.err && err == nil {
+			t.Errorf("expected error for [%q], got nil", tt.input)
+		} else if !tt.err && err != nil {
+			t.Errorf("unexpected error for [%q]: %v", tt.input, err)
+		} else if !tt.err && res != tt.folded {
+			t.Errorf("expected [%q] to fold to [%q], got [%q]", tt.input, tt.folded, res)
+		}
+	}
+}
+
+func TestAllowedCharactersPrintableGlyphs(t *testing.T) {
+	if !i18n.Enabled {
+		t.Skip("i18n not enabled")
+	}
+
+	oldAllowed := globalAllowedCharacters
+	t.Cleanup(func() {
+		globalAllowedCharacters = oldAllowed
+	})
+
+	globalAllowedCharacters = AllowedCharactersConfig{
+		PrintableGlyphs: true,
+	}
+
+	testCases := []struct {
+		input  string
+		folded string
+		err    bool
+	}{
+		// Block elements
+		{"█Block█", "█block█", false},
+		{"░Shade░", "░shade░", false},
+		// Legacy computing (U+1FB00)
+		{"\U0001FB00Legacy\U0001FB00", "\U0001fb00legacy\U0001fb00", false},
+		// Legacy computing supplement (U+1CC00)
+		{"\U0001CC00Supp\U0001CC00", "\U0001cc00supp\U0001cc00", false},
+		// Emojis & Symbols
+		{"👾gamer👾", "👾gamer👾", false},
+		{"🔥Fire🔥", "🔥fire🔥", false},
+		// Combining marks
+		{"e\u0301clair", "éclair", false},
+	}
+
+	for _, tt := range testCases {
+		res, err := CasefoldName(tt.input)
+		if tt.err && err == nil {
+			t.Errorf("expected error for [%q], got nil", tt.input)
+		} else if !tt.err && err != nil {
+			t.Errorf("unexpected error for [%q]: %v", tt.input, err)
+		} else if !tt.err && res != tt.folded {
+			t.Errorf("expected [%q] to fold to [%q], got [%q]", tt.input, tt.folded, res)
+		}
+	}
+}

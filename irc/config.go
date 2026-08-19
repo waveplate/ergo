@@ -626,6 +626,7 @@ type Config struct {
 		supportedCapsWithoutSTS  *caps.Set
 		capValues                caps.Values
 		Casemapping              i18n.Casemapping
+		AllowedCharacters        AllowedCharactersConfig `yaml:"allowed-characters"`
 		EnforceUtf8              bool                `yaml:"enforce-utf8"`
 		OutputPath               string              `yaml:"output-path"`
 		IPCheckScript            IPCheckScriptConfig `yaml:"ip-check-script"`
@@ -1426,8 +1427,8 @@ func LoadConfig(filename string) (config *Config, err error) {
 	}
 
 	if !i18n.Enabled {
-		if config.Server.Casemapping != i18n.CasemappingASCII {
-			return nil, fmt.Errorf("i18n support was compiled out; set casemapping to 'ascii' or recompile")
+		if config.Server.Casemapping != i18n.CasemappingASCII || config.Server.AllowedCharacters.PrintableGlyphs {
+			return nil, fmt.Errorf("i18n support was compiled out; set casemapping to 'ascii' and printable-glyphs to false, or recompile")
 		}
 	}
 

@@ -143,6 +143,14 @@ server:
     # problematic.
     casemapping: "ascii"
 
+    # allowed-characters provides fine-grained control over allowable characters in identifiers
+    # (nicknames, account names, and channel names):
+    # allowed-characters:
+        # allow IRC formatting/control characters (bold, color, italics, underline, etc.)
+        # irc-formatting: false
+        # allow printable Unicode glyphs (emoji, symbols, combining marks, legacy computing, block elements)
+        # printable-glyphs: false
+
     # enforce-utf8 controls whether the server will preemptively discard non-UTF8
     # messages (since they cannot be relayed to websocket clients), or will allow
     # them and relay them to non-websocket clients (as in traditional IRC).
