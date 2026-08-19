@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	// MaxLineLen is the maximum IRC line length, not including tags
+	MaxLineLen = 4096
+)
+
 func IsRestrictedCTCPMessage(message string) bool {
 	// block all CTCP privmsgs to Tor clients except for ACTION
 	// DCC can potentially be used for deanonymization, the others for fingerprinting
@@ -21,7 +26,7 @@ type MessagePair struct {
 
 // SplitMessage represents a message that's been split for sending.
 // Two possibilities:
-// (a) Standard message that can be relayed on a single 512-byte line
+// (a) Standard message that can be relayed on a single un-split line
 //
 //	(MessagePair contains the message, Split == nil)
 //
@@ -91,7 +96,7 @@ func (sm *SplitMessage) IsRestrictedCTCPMessage() bool {
 	return false
 }
 
-func (sm *SplitMessage) Is512() bool {
+func (sm *SplitMessage) IsSingleLine() bool {
 	return sm.Split == nil
 }
 

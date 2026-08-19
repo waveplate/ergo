@@ -18,7 +18,7 @@ import (
 // either send a cached version of the message or dispatch to another
 // send routine that can synthesize the necessary version on the fly.
 type MessageCache struct {
-	// these cache a single-line message (e.g., JOIN, or PRIVMSG with a 512-byte message)
+	// these cache a single-line message (e.g., JOIN, or PRIVMSG without line splitting)
 	// one version is "plain" (legacy clients with no tags) and one is "full" (client has
 	// the message-tags cap)
 	plain    []byte
@@ -112,7 +112,7 @@ func (m *MessageCache) InitializeSplitMessage(server *Server, nickmask, accountN
 
 	forceTrailing := forceTrailing(server.Config(), command)
 
-	if message.Is512() {
+	if message.IsSingleLine() {
 		isTagmsg := command == "TAGMSG"
 		var msg ircmsg.Message
 		if forceTrailing {

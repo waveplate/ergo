@@ -31,11 +31,6 @@ const (
 	// @ separates username from hostname
 	// : means trailing
 	protocolBreakingNameCharacters = " ,*?.!@:"
-
-	// #1436: we discovered that these characters are problematic,
-	// so we're disallowing them in new nicks/account names, but allowing
-	// previously registered names
-	disfavoredNameCharacters = `<>'";#`
 )
 
 var (
@@ -158,8 +153,13 @@ func CasefoldName(name string) (string, error) {
 	lowered, err := Casefold(name)
 
 	if err != nil {
-		return "", err
-	} else if len(lowered) == 0 {
+		// Fallback to permissive casefolding to allow arbitrary unicode and formatting codes
+		lowered = norm.NFD.String(name)
+		lowered = cases.Fold().String(lowered)
+		lowered = norm.NFD.String(lowered)
+	}
+	
+	if len(lowered) == 0 {
 		return "", errStringIsEmpty
 	}
 
@@ -169,8 +169,11 @@ func CasefoldName(name string) (string, error) {
 	if strings.ContainsAny(lowered, protocolBreakingNameCharacters) || strings.ContainsAny(string(lowered[0]), "#~&@%+-") {
 		return "", errInvalidCharacter
 	}
+	if strings.ContainsAny(lowered, "\x00\r\n\t") {
+		return "", errInvalidCharacter
+	}
 
-	return lowered, err
+	return lowered, nil
 }
 
 // CasefoldTarget returns a casefolded version of an IRC target, i.e.
