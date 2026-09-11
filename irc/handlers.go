@@ -527,6 +527,9 @@ func awayHandler(server *Server, client *Client, msg ircmsg.Message, rb *Respons
 
 	if client.registered && wasAway != nowAway {
 		dispatchAwayNotify(client, nowAway)
+		if server.s2s != nil {
+			server.s2s.BroadcastAway(client, nowAway)
+		}
 	} // else: we'll send it (if applicable) after reattach
 
 	return false
@@ -1684,6 +1687,9 @@ func killHandler(server *Server, client *Client, msg ircmsg.Message, rb *Respons
 		snoLine = fmt.Sprintf(ircfmt.Unescape("%s was killed by %s $c[grey][$r%s$c[grey]]"), target.Nick(), client.Nick(), comment)
 	}
 	server.snomasks.Send(sno.LocalKills, snoLine)
+	if server.s2s != nil {
+		server.s2s.BroadcastKill(client, target, comment)
+	}
 
 	target.Quit(quitMsg, nil, nil)
 	target.destroy(nil)
@@ -2051,6 +2057,10 @@ func announceCmodeChanges(channel *Channel, applied modes.ModeChanges, source, a
 			Message:     message,
 			IsBot:       isBot,
 		}, account)
+
+		if channel.server.s2s != nil {
+			channel.server.s2s.BroadcastTMode(channel, source, applied)
+		}
 	}
 }
 
@@ -2535,6 +2545,26 @@ func dispatchMessageToTarget(client *Client, tags map[string]string, histType hi
 		if user == nil {
 			if histType != history.Notice {
 				rb.Add(nil, server.name, ERR_NOSUCHNICK, client.Nick(), target, "No such nick")
+			}
+			return
+		}
+
+		if user.IsRemote() {
+			details := client.Details()
+			tDetails := user.Details()
+			rb.addEchoMessage(tags, details.nickMask, details.accountName, command, target, message, isBot)
+			if client.server.s2s != nil {
+				client.server.s2s.SendDirectMsg(client, user, command, message)
+			}
+			config := server.Config()
+			if config.History.Enabled {
+				item := history.Item{
+					Type:    histType,
+					Message: message,
+					Tags:    tags,
+					IsBot:   isBot,
+				}
+				client.addHistoryItem(user, item, &details, &tDetails, config)
 			}
 			return
 		}
