@@ -673,12 +673,12 @@ func (channel *Channel) hasClient(client *Client) bool {
 
 // <mode> <mode params>
 func (channel *Channel) modeStrings(client *Client) (result []string) {
-	hasPrivs := client.HasRoleCapabs("sajoin")
+	hasPrivs := client != nil && client.HasRoleCapabs("sajoin")
 
 	channel.stateMutex.RLock()
 	defer channel.stateMutex.RUnlock()
 
-	isMember := hasPrivs || channel.members.Has(client)
+	isMember := client == nil || hasPrivs || channel.members.Has(client)
 	showKey := isMember && (channel.key != "")
 	showUserLimit := channel.userLimit > 0
 	showForward := channel.forward != ""
@@ -1737,6 +1737,9 @@ func (channel *Channel) Invite(invitee *Client, inviter *Client, rb *ResponseBuf
 	rb.Add(nil, inviter.server.name, RPL_INVITING, details.nick, tnick, chname)
 	for _, iSession := range invitee.Sessions() {
 		iSession.sendFromClientInternal(false, message.Time, message.Msgid, details.nickMask, details.accountName, isBot, nil, "INVITE", tnick, chname)
+	}
+	if invitee.IsRemote() && channel.server.s2s != nil {
+		channel.server.s2s.BroadcastInvite(inviter, invitee, channel)
 	}
 	if away, awayMessage := invitee.Away(); away {
 		rb.Add(nil, inviter.server.name, RPL_AWAY, details.nick, tnick, awayMessage)

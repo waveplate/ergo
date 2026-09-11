@@ -312,6 +312,89 @@ func (s2s *S2SManager) SendDirectMsg(from *Client, to *Client, command string, m
 	}
 }
 
+// BroadcastInvite forwards an invitation across the network.
+func (s2s *S2SManager) BroadcastInvite(source *Client, target *Client, channel *Channel) {
+	if target.Link() != nil && !target.Link().IsClosed() {
+		chanTS := fmt.Sprintf("%d", channel.CreatedTime().Unix())
+		target.Link().Send(source.UID(), "INVITE", target.UID(), channel.Name(), chanTS)
+	}
+}
+
+// BroadcastKnock forwards a knock request across the network.
+func (s2s *S2SManager) BroadcastKnock(source *Client, channel *Channel) {
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, source.UID(), "KNOCK", channel.Name()), nil)
+}
+
+// BroadcastWallops sends a wallops message to all server links.
+func (s2s *S2SManager) BroadcastWallops(source *Client, text string) {
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, source.UID(), "WALLOPS", text), nil)
+}
+
+// BroadcastOperwall sends an operwall message to all server links.
+func (s2s *S2SManager) BroadcastOperwall(source *Client, text string) {
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, source.UID(), "OPERWALL", text), nil)
+}
+
+// BroadcastSave sends a SAVE collision resolution command across the network.
+func (s2s *S2SManager) BroadcastSave(targetUID string, ts int64) {
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, s2s.server.sid, "SAVE", targetUID, fmt.Sprintf("%d", ts)), nil)
+}
+
+// BroadcastEncap broadcasts an ENCAP command to a specific target or all servers.
+func (s2s *S2SManager) BroadcastEncap(target string, subcommand string, params ...string) {
+	allParams := append([]string{target, subcommand}, params...)
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, s2s.server.sid, "ENCAP", allParams...), nil)
+}
+
+// ConnectLink attempts an immediate connection to a configured peer link.
+func (s2s *S2SManager) ConnectLink(nameOrSID string) error {
+	cfg := s2s.FindLinkConfig(nameOrSID, nameOrSID)
+	if cfg == nil {
+		return fmt.Errorf("no link configuration found for %s", nameOrSID)
+	}
+
+	s2s.RLock()
+	existingLink := s2s.directLinks[cfg.SID]
+	s2s.RUnlock()
+	if existingLink != nil && !existingLink.IsClosed() {
+		return fmt.Errorf("link to %s (%s) is already connected", cfg.Name, cfg.SID)
+	}
+
+	go s2s.startOutboundConnector(cfg)
+	return nil
+}
+
+// DropLink disconnects a link by name or SID.
+func (s2s *S2SManager) DropLink(nameOrSID string, reason string) error {
+	s2s.RLock()
+	node := s2s.nodesBySID[strings.ToUpper(nameOrSID)]
+	if node == nil {
+		node = s2s.nodesByName[strings.ToLower(nameOrSID)]
+	}
+	s2s.RUnlock()
+
+	if node == nil {
+		return fmt.Errorf("server %s not found in network graph", nameOrSID)
+	}
+
+	if node.IsLocal {
+		return fmt.Errorf("cannot drop local server")
+	}
+
+	if node.IsDirect && node.NextHop != nil {
+		node.NextHop.Close(reason)
+		return nil
+	}
+
+	// Routed node: send SQUIT command towards uplink
+	if reason == "" {
+		reason = "Operator SQUIT"
+	}
+	s2s.BroadcastMsg(ircmsg.MakeMessage(nil, s2s.server.sid, "SQUIT", node.SID, reason), nil)
+	s2s.HandleServerSplit(node.SID, reason)
+	return nil
+}
+
 // HandleNetsplit cleans up all remote servers and clients reachable via a disconnected direct link.
 func (s2s *S2SManager) HandleNetsplit(lostLink *ServerLink, reason string) {
 	s2s.Lock()

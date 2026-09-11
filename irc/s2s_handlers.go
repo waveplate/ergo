@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ergochat/ergo/irc/modes"
+	"github.com/ergochat/ergo/irc/sno"
 	"github.com/ergochat/ergo/irc/utils"
 	"github.com/ergochat/irc-go/ircmsg"
 )
@@ -75,6 +76,16 @@ func (s2s *S2SManager) HandleLine(link *ServerLink, rawLine string, msg ircmsg.M
 		return s2s.handleBMask(link, msg)
 	case "TB", "TOPIC":
 		return s2s.handleTopic(link, msg)
+	case "SAVE":
+		return s2s.handleSave(link, msg)
+	case "INVITE":
+		return s2s.handleInvite(link, msg)
+	case "KNOCK":
+		return s2s.handleKnock(link, msg)
+	case "WALLOPS":
+		return s2s.handleWallops(link, msg)
+	case "OPERWALL":
+		return s2s.handleOperwall(link, msg)
 	case "PRIVMSG":
 		return s2s.handlePrivmsg(link, msg)
 	case "NOTICE":
@@ -731,17 +742,25 @@ func (s2s *S2SManager) handleTopic(link *ServerLink, msg ircmsg.Message) error {
 		topicTSUnix, _ = strconv.ParseInt(msg.Params[1], 10, 64)
 		topicSetBy = msg.Params[2]
 		topic = msg.Params[3]
+	} else if msg.Command == "TB" && len(msg.Params) == 3 {
+		topicTSUnix, _ = strconv.ParseInt(msg.Params[1], 10, 64)
+		topicSetBy = msg.Source
+		topic = msg.Params[2]
 	} else if len(msg.Params) >= 2 {
 		topicTSUnix = time.Now().Unix()
 		topicSetBy = msg.Source
 		topic = msg.Params[len(msg.Params)-1]
 	}
 
+	// Topic TS comparison: newer topic timestamp wins
 	ch.stateMutex.Lock()
 	if topicTSUnix >= ch.topicSetTime.Unix() || ch.topic == "" {
 		ch.topic = topic
 		ch.topicSetBy = topicSetBy
 		ch.topicSetTime = time.Unix(topicTSUnix, 0).UTC()
+	} else {
+		ch.stateMutex.Unlock()
+		return nil
 	}
 	ch.stateMutex.Unlock()
 
@@ -763,9 +782,10 @@ func (s2s *S2SManager) handleTMode(link *ServerLink, msg ircmsg.Message) error {
 
 	var chname, modesStr string
 	var args []string
+	var chanTSUnix int64
 
 	if msg.Command == "TMODE" && len(msg.Params) >= 3 {
-		// chanTS := msg.Params[0]
+		chanTSUnix, _ = strconv.ParseInt(msg.Params[0], 10, 64)
 		chname = msg.Params[1]
 		modesStr = msg.Params[2]
 		args = msg.Params[3:]
@@ -782,12 +802,75 @@ func (s2s *S2SManager) handleTMode(link *ServerLink, msg ircmsg.Message) error {
 		return nil
 	}
 
+	localTS := ch.CreatedTime().Unix()
+
+	// TS comparison: if incoming TS > local TS, drop mode changes
+	if chanTSUnix > 0 && chanTSUnix > localTS {
+		return nil
+	}
+
+	if chanTSUnix > 0 && chanTSUnix < localTS {
+		// Older TS wins, update TS and set channel creation time
+		ch.SetCreatedTime(time.Unix(chanTSUnix, 0).UTC())
+	}
+
+	// Convert UID arguments to nicks for user modes (+o, +v, +h, +q, +a)
+	resolvedArgs := make([]string, len(args))
+	for i, arg := range args {
+		if targetClient := s2s.server.clients.GetByUID(arg); targetClient != nil {
+			resolvedArgs[i] = targetClient.Nick()
+		} else {
+			resolvedArgs[i] = arg
+		}
+	}
+
+	modeParams := append([]string{modesStr}, resolvedArgs...)
+	changes, _ := modes.ParseChannelModeChanges(modeParams...)
+	for _, change := range changes {
+		switch change.Mode {
+		case modes.BanMask, modes.ExceptMask, modes.InviteMask:
+			if change.Op == modes.Add {
+				ch.lists[change.Mode].Add(change.Arg, msg.Source, "")
+			} else if change.Op == modes.Remove {
+				ch.lists[change.Mode].Remove(change.Arg)
+			}
+		case modes.ChannelFounder, modes.ChannelAdmin, modes.ChannelOperator, modes.Halfop, modes.Voice:
+			target := s2s.server.clients.Get(change.Arg)
+			if target == nil {
+				target = s2s.server.clients.GetByUID(change.Arg)
+			}
+			if target != nil {
+				ch.stateMutex.Lock()
+				if data, exists := ch.members[target]; exists {
+					data.modes.SetMode(change.Mode, change.Op == modes.Add)
+				}
+				ch.stateMutex.Unlock()
+			}
+		case modes.UserLimit:
+			if change.Op == modes.Add {
+				if val, err := strconv.Atoi(change.Arg); err == nil && val > 0 {
+					ch.setUserLimit(val)
+				}
+			} else {
+				ch.setUserLimit(0)
+			}
+		case modes.Key:
+			if change.Op == modes.Add {
+				ch.setKey(change.Arg)
+			} else {
+				ch.setKey("")
+			}
+		default:
+			ch.flags.SetMode(change.Mode, change.Op == modes.Add)
+		}
+	}
+
 	sourceMask := msg.Source
 	if srcClient := s2s.server.clients.GetByUID(msg.Source); srcClient != nil {
 		sourceMask = srcClient.NickMaskString()
 	}
 
-	modeArgs := append([]string{ch.Name(), modesStr}, args...)
+	modeArgs := append([]string{ch.Name(), modesStr}, resolvedArgs...)
 	for _, member := range ch.Members() {
 		for _, session := range member.Sessions() {
 			session.Send(nil, sourceMask, "MODE", modeArgs...)
@@ -804,6 +887,7 @@ func (s2s *S2SManager) handleBMask(link *ServerLink, msg ircmsg.Message) error {
 		return nil
 	}
 
+	chanTSUnix, _ := strconv.ParseInt(msg.Params[0], 10, 64)
 	chname := msg.Params[1]
 	maskType := msg.Params[2]
 	masksStr := msg.Params[3]
@@ -813,7 +897,11 @@ func (s2s *S2SManager) handleBMask(link *ServerLink, msg ircmsg.Message) error {
 		return nil
 	}
 
-	masks := strings.Fields(masksStr)
+	localTS := ch.CreatedTime().Unix()
+	if chanTSUnix > 0 && chanTSUnix > localTS {
+		return nil
+	}
+
 	var maskMode modes.Mode
 	switch maskType {
 	case "b":
@@ -823,9 +911,172 @@ func (s2s *S2SManager) handleBMask(link *ServerLink, msg ircmsg.Message) error {
 	case "I":
 		maskMode = modes.InviteMask
 	}
+
 	if maskMode != 0 {
+		// If incoming TS is older, clear list before adding
+		if chanTSUnix > 0 && chanTSUnix < localTS {
+			ch.lists[maskMode] = NewUserMaskSet()
+			ch.SetCreatedTime(time.Unix(chanTSUnix, 0).UTC())
+		}
+		masks := strings.Fields(masksStr)
 		for _, mask := range masks {
 			ch.lists[maskMode].Add(mask, msg.Source, "")
+		}
+	}
+
+	s2s.BroadcastMsg(msg, link)
+	return nil
+}
+
+// :<source> SAVE <target_uid> <ts>
+func (s2s *S2SManager) handleSave(link *ServerLink, msg ircmsg.Message) error {
+	if len(msg.Params) < 1 {
+		return nil
+	}
+	targetUID := msg.Params[0]
+	client := s2s.server.clients.GetByUID(targetUID)
+	if client == nil {
+		return nil
+	}
+
+	newNick := client.UID()
+	var newTS time.Time
+	if len(msg.Params) > 1 {
+		tsUnix, _ := strconv.ParseInt(msg.Params[1], 10, 64)
+		newTS = time.Unix(tsUnix, 0).UTC()
+	} else {
+		newTS = time.Now().UTC()
+	}
+
+	oldNickMask := client.NickMaskString()
+	_ = s2s.server.clients.SetRemoteNick(client, newNick, newTS)
+
+	for session := range client.Friends() {
+		session.Send(nil, oldNickMask, "NICK", newNick)
+	}
+
+	s2s.BroadcastMsg(msg, link)
+	return nil
+}
+
+// :<source_uid> INVITE <target_uid> <channel> [<chanTS>]
+func (s2s *S2SManager) handleInvite(link *ServerLink, msg ircmsg.Message) error {
+	if len(msg.Params) < 2 {
+		return nil
+	}
+	targetUID := msg.Params[0]
+	chname := msg.Params[1]
+
+	sourceClient := s2s.server.clients.GetByUID(msg.Source)
+	sourceMask := msg.Source
+	if sourceClient != nil {
+		sourceMask = sourceClient.NickMaskString()
+	}
+
+	targetClient := s2s.server.clients.GetByUID(targetUID)
+	if targetClient == nil {
+		targetClient = s2s.server.clients.Get(targetUID)
+	}
+
+	if targetClient != nil {
+		if !targetClient.IsRemote() {
+			for _, session := range targetClient.Sessions() {
+				session.sendFromClientInternal(false, time.Time{}, "", sourceMask, "*", false, nil, "INVITE", targetClient.Nick(), chname)
+			}
+			chcfname, err := CasefoldChannel(chname)
+			if err != nil {
+				chcfname = strings.ToLower(chname)
+			}
+			var chanCreatedAt time.Time
+			if ch := s2s.server.channels.Get(chname); ch != nil {
+				chanCreatedAt = ch.CreatedTime()
+			} else if len(msg.Params) >= 3 {
+				chanTSUnix, _ := strconv.ParseInt(msg.Params[2], 10, 64)
+				chanCreatedAt = time.Unix(chanTSUnix, 0).UTC()
+			}
+			targetClient.Invite(chcfname, chanCreatedAt)
+		} else {
+			if targetClient.Link() != nil && targetClient.Link() != link {
+				targetClient.Link().SendMsg(msg)
+			}
+		}
+	}
+	return nil
+}
+
+// :<source_uid> KNOCK <channel>
+func (s2s *S2SManager) handleKnock(link *ServerLink, msg ircmsg.Message) error {
+	if len(msg.Params) < 1 {
+		return nil
+	}
+	chname := msg.Params[0]
+	ch := s2s.server.channels.Get(chname)
+	if ch == nil {
+		return nil
+	}
+
+	sourceClient := s2s.server.clients.GetByUID(msg.Source)
+	sourceMask := msg.Source
+	if sourceClient != nil {
+		sourceMask = sourceClient.NickMaskString()
+	}
+
+	knockNotice := fmt.Sprintf("User %s is knocking on %s", sourceMask, ch.Name())
+	for _, member := range ch.Members() {
+		if ch.ClientIsAtLeast(member, modes.Halfop) {
+			for _, session := range member.Sessions() {
+				session.Send(nil, s2s.server.name, "NOTICE", ch.Name(), knockNotice)
+			}
+		}
+	}
+
+	s2s.BroadcastMsg(msg, link)
+	return nil
+}
+
+// :<source> WALLOPS :<message>
+func (s2s *S2SManager) handleWallops(link *ServerLink, msg ircmsg.Message) error {
+	if len(msg.Params) < 1 {
+		return nil
+	}
+	text := msg.Params[0]
+
+	sourceClient := s2s.server.clients.GetByUID(msg.Source)
+	sourceMask := msg.Source
+	if sourceClient != nil {
+		sourceMask = sourceClient.NickMaskString()
+	}
+
+	for _, c := range s2s.server.clients.AllClients() {
+		if !c.IsRemote() && (c.HasMode(modes.WallOps) || c.HasMode(modes.Operator)) {
+			for _, session := range c.Sessions() {
+				session.Send(nil, sourceMask, "WALLOPS", text)
+			}
+		}
+	}
+
+	s2s.BroadcastMsg(msg, link)
+	return nil
+}
+
+// :<source> OPERWALL :<message>
+func (s2s *S2SManager) handleOperwall(link *ServerLink, msg ircmsg.Message) error {
+	if len(msg.Params) < 1 {
+		return nil
+	}
+	text := msg.Params[0]
+
+	sourceClient := s2s.server.clients.GetByUID(msg.Source)
+	sourceMask := msg.Source
+	if sourceClient != nil {
+		sourceMask = sourceClient.NickMaskString()
+	}
+
+	for _, c := range s2s.server.clients.AllClients() {
+		if !c.IsRemote() && c.HasMode(modes.Operator) {
+			for _, session := range c.Sessions() {
+				session.Send(nil, sourceMask, "NOTICE", "*** Operwall: "+text)
+			}
 		}
 	}
 
@@ -898,14 +1149,118 @@ func (s2s *S2SManager) handleEncap(link *ServerLink, msg ircmsg.Message) error {
 	}
 
 	target := strings.ToUpper(msg.Params[0])
-	// subcmd := strings.ToUpper(msg.Params[1])
+	subcmd := strings.ToUpper(msg.Params[1])
+	subParams := msg.Params[2:]
 
-	if target == "*" || target == s2s.server.sid || target == strings.ToUpper(s2s.server.name) {
-		// Process local ENCAP if needed
+	isForUs := target == "*" || target == s2s.server.sid || target == strings.ToUpper(s2s.server.name)
+
+	if isForUs {
+		switch subcmd {
+		case "SU", "LOGIN":
+			// ENCAP * SU <uid> <account>
+			if len(subParams) >= 2 {
+				uid := subParams[0]
+				account := subParams[1]
+				if client := s2s.server.clients.GetByUID(uid); client != nil {
+					client.stateMutex.Lock()
+					if account == "*" || account == "" {
+						client.account = ""
+						client.accountName = "*"
+					} else {
+						client.account = account
+						client.accountName = account
+					}
+					client.stateMutex.Unlock()
+				}
+			}
+		case "CERTFP":
+			// ENCAP * CERTFP <uid> :<fingerprint>
+			if len(subParams) >= 2 {
+				uid := subParams[0]
+				fp := subParams[1]
+				if client := s2s.server.clients.GetByUID(uid); client != nil {
+					client.SetCertFP(fp)
+				}
+			}
+		case "CHGHOST":
+			// ENCAP * CHGHOST <uid> <newhost>
+			if len(subParams) >= 2 {
+				uid := subParams[0]
+				newhost := subParams[1]
+				if client := s2s.server.clients.GetByUID(uid); client != nil {
+					oldMask := client.NickMaskString()
+					client.stateMutex.Lock()
+					client.rawHostname = newhost
+					client.hostname = newhost
+					client.stateMutex.Unlock()
+					for session := range client.Friends() {
+						session.Send(nil, oldMask, "CHGHOST", client.Username(), newhost)
+					}
+				}
+			}
+		case "CHGIDENT":
+			// ENCAP * CHGIDENT <uid> <newident>
+			if len(subParams) >= 2 {
+				uid := subParams[0]
+				newident := subParams[1]
+				if client := s2s.server.clients.GetByUID(uid); client != nil {
+					oldMask := client.NickMaskString()
+					client.stateMutex.Lock()
+					client.username = newident
+					client.stateMutex.Unlock()
+					for session := range client.Friends() {
+						session.Send(nil, oldMask, "CHGHOST", newident, client.Hostname())
+					}
+				}
+			}
+		case "CHGNAME":
+			// ENCAP * CHGNAME <uid> :<newrealname>
+			if len(subParams) >= 2 {
+				uid := subParams[0]
+				newrealname := subParams[1]
+				if client := s2s.server.clients.GetByUID(uid); client != nil {
+					client.stateMutex.Lock()
+					client.realname = newrealname
+					client.stateMutex.Unlock()
+					for session := range client.Friends() {
+						session.Send(nil, client.NickMaskString(), "SETNAME", newrealname)
+					}
+				}
+			}
+		case "RSFNC":
+			// ENCAP * RSFNC <target_uid> <newnick> <newts> <oldts>
+			if len(subParams) >= 3 {
+				targetUID := subParams[0]
+				newNick := subParams[1]
+				tsUnix, _ := strconv.ParseInt(subParams[2], 10, 64)
+				newTS := time.Unix(tsUnix, 0).UTC()
+				if client := s2s.server.clients.GetByUID(targetUID); client != nil {
+					oldMask := client.NickMaskString()
+					_ = s2s.server.clients.SetRemoteNick(client, newNick, newTS)
+					for session := range client.Friends() {
+						session.Send(nil, oldMask, "NICK", newNick)
+					}
+				}
+			}
+		case "SNO":
+			// ENCAP * SNO <mask_letter> :<message>
+			if len(subParams) >= 2 {
+				snoMaskStr := subParams[0]
+				snoMsg := subParams[1]
+				var mask sno.Mask
+				if len(snoMaskStr) > 0 {
+					mask = sno.Mask(snoMaskStr[0])
+				}
+				s2s.server.snomasks.Send(mask, snoMsg)
+			}
+		}
 	}
 
-	if target == "*" || target != s2s.server.sid {
+	// Forward ENCAP
+	if target == "*" {
 		s2s.BroadcastMsg(msg, link)
+	} else if target != s2s.server.sid && target != strings.ToUpper(s2s.server.name) {
+		s2s.SendToSID(target, msg)
 	}
 	return nil
 }

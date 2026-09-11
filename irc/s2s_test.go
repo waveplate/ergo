@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ergochat/ergo/irc/logger"
+	"github.com/ergochat/ergo/irc/modes"
 	"github.com/ergochat/ergo/irc/utils"
 )
 
@@ -66,6 +67,7 @@ limits:
     awaylen: 390
     kicklen: 390
     topiclen: 390
+    chan-list-modes: 60
 `, name, sid, linksYAML.String(), dbPath)
 
 	configFile := filepath.Join(tempDir, "ircd.yaml")
@@ -748,3 +750,254 @@ func TestS2SMultiHopRouting(t *testing.T) {
 		t.Errorf("alice on S1 did not receive multi-hop privmsg from charlie on S3, got: %s", aliceLine)
 	}
 }
+
+func TestS2SLinksCommand(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+	s3 := createTestServer(t, "300", "srv3.test", nil)
+
+	linkTestServers(t, s1, s2, nil, nil)
+	linkTestServers(t, s2, s3, nil, nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	time.Sleep(100 * time.Millisecond)
+
+	// Flush registration output
+	for {
+		if alice.ReadLineTimeout(20*time.Millisecond) == "" {
+			break
+		}
+	}
+
+	alice.SendLine("LINKS")
+
+	var links []string
+	var endOfLinks bool
+	for {
+		line := alice.ReadLineTimeout(1 * time.Second)
+		if line == "" {
+			break
+		}
+		if strings.Contains(line, " 364 ") { // RPL_LINKS
+			links = append(links, line)
+		} else if strings.Contains(line, " 365 ") { // RPL_ENDOFLINKS
+			endOfLinks = true
+			break
+		}
+	}
+
+	if !endOfLinks {
+		t.Errorf("expected 365 RPL_ENDOFLINKS")
+	}
+	if len(links) < 3 {
+		t.Errorf("expected at least 3 servers in LINKS output, got %d: %v", len(links), links)
+	}
+}
+
+func TestS2SKnockAndInvite(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+
+	linkTestServers(t, s1, s2, nil, nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	bob := newTestIRCClient(t, s2, "bob")
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Alice joins and sets +i on #secret
+	alice.SendLine("JOIN #secret")
+	alice.SendLine("MODE #secret +i")
+	time.Sleep(100 * time.Millisecond)
+
+	// Flush buffers
+	for {
+		if alice.ReadLineTimeout(20*time.Millisecond) == "" {
+			break
+		}
+	}
+	for {
+		if bob.ReadLineTimeout(20*time.Millisecond) == "" {
+			break
+		}
+	}
+
+	// Bob knocks on #secret from server 2
+	bob.SendLine("KNOCK #secret")
+	bobAckLine := bob.ReadLineTimeout(1 * time.Second)
+	if !strings.Contains(bobAckLine, " 710 ") {
+		t.Errorf("bob did not receive 710 knock ack, got: %s", bobAckLine)
+	}
+
+	aliceKnockLine := alice.ReadLineTimeout(1 * time.Second)
+	if !strings.Contains(aliceKnockLine, "is knocking on #secret") {
+		t.Errorf("alice did not receive knock notice from bob, got: %s", aliceKnockLine)
+	}
+
+	// Alice invites Bob to #secret
+	alice.SendLine("INVITE bob #secret")
+	bobInviteLine := bob.ReadLineTimeout(1 * time.Second)
+	if !strings.Contains(bobInviteLine, "INVITE") || !strings.Contains(bobInviteLine, "#secret") {
+		t.Errorf("bob did not receive invite from alice, got: %s", bobInviteLine)
+	}
+
+	// Bob can now join #secret
+	bob.SendLine("JOIN #secret")
+	time.Sleep(100 * time.Millisecond)
+
+	ch2 := s2.channels.Get("#secret")
+	if ch2 == nil || !ch2.hasClient(s2.clients.Get("bob")) {
+		t.Errorf("bob failed to join #secret after invite")
+	}
+}
+
+func TestS2SWallops(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+
+	linkTestServers(t, s1, s2, nil, nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	bob := newTestIRCClient(t, s2, "bob")
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Bob enables mode +w (wallops) on server 2
+	bob.SendLine("MODE bob +w")
+	time.Sleep(50 * time.Millisecond)
+
+	// Flush buffers
+	for {
+		if alice.ReadLineTimeout(20*time.Millisecond) == "" {
+			break
+		}
+	}
+	for {
+		if bob.ReadLineTimeout(20*time.Millisecond) == "" {
+			break
+		}
+	}
+
+	// Alice sends WALLOPS from server 1
+	alice.SendLine("WALLOPS :System maintenance in 10 minutes")
+	bobWallopsLine := bob.ReadLineTimeout(1 * time.Second)
+	if !strings.Contains(bobWallopsLine, "WALLOPS") || !strings.Contains(bobWallopsLine, "System maintenance in 10 minutes") {
+		t.Errorf("bob did not receive WALLOPS message from alice, got: %s", bobWallopsLine)
+	}
+}
+
+func TestS2SEncap(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+
+	_, link2 := linkTestServers(t, s1, s2, nil, nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	_ = alice
+	time.Sleep(100 * time.Millisecond)
+
+	aliceClient := s1.clients.Get("alice")
+	if aliceClient == nil {
+		t.Fatalf("alice not found on server 1")
+	}
+	aliceUID := aliceClient.UID()
+
+	// 1. Test ENCAP * CHGHOST
+	link2.SendLine(fmt.Sprintf("ENCAP * CHGHOST %s user.spoof.net", aliceUID))
+	time.Sleep(100 * time.Millisecond)
+	if aliceClient.Hostname() != "user.spoof.net" {
+		t.Errorf("expected updated hostname 'user.spoof.net', got: %s", aliceClient.Hostname())
+	}
+
+	// 2. Test ENCAP * SU (account login)
+	link2.SendLine(fmt.Sprintf("ENCAP * SU %s AliceAccount", aliceUID))
+	time.Sleep(100 * time.Millisecond)
+	if aliceClient.AccountName() != "AliceAccount" {
+		t.Errorf("expected account 'AliceAccount', got: %s", aliceClient.AccountName())
+	}
+
+	// 3. Test ENCAP * RSFNC (forced nick change)
+	newTS := time.Now().Unix()
+	link2.SendLine(fmt.Sprintf("ENCAP * RSFNC %s alice_renamed %d %d", aliceUID, newTS, newTS))
+	time.Sleep(100 * time.Millisecond)
+	if aliceClient.Nick() != "alice_renamed" {
+		t.Errorf("expected renamed nick 'alice_renamed', got: %s", aliceClient.Nick())
+	}
+}
+
+func TestS2SSave(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+
+	_, link2 := linkTestServers(t, s1, s2, nil, nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	_ = alice
+	time.Sleep(100 * time.Millisecond)
+
+	aliceClient := s1.clients.Get("alice")
+	if aliceClient == nil {
+		t.Fatalf("alice not found on server 1")
+	}
+	aliceUID := aliceClient.UID()
+
+	// Server 2 sends SAVE command targeting Alice's UID
+	link2.SendLine(fmt.Sprintf("SAVE %s %d", aliceUID, time.Now().Unix()))
+	time.Sleep(100 * time.Millisecond)
+
+	// Alice's nick should now be changed to her UID
+	if aliceClient.Nick() != aliceUID {
+		t.Errorf("expected nick to be saved to UID %s, got: %s", aliceUID, aliceClient.Nick())
+	}
+	if s1.clients.Get("alice") != nil {
+		t.Errorf("old nick 'alice' should no longer be in server 1 lookup set")
+	}
+	if s1.clients.Get(aliceUID) != aliceClient {
+		t.Errorf("client not found by new nick (UID) in lookup set")
+	}
+}
+
+func TestS2SBMaskBurst(t *testing.T) {
+	s1 := createTestServer(t, "100", "srv1.test", nil)
+
+	alice := newTestIRCClient(t, s1, "alice")
+	time.Sleep(50 * time.Millisecond)
+
+	alice.SendLine("JOIN #bmask_chan")
+	time.Sleep(50 * time.Millisecond)
+
+	// Alice sets ban mask and invite mask
+	alice.SendLine("MODE #bmask_chan +b *!*@evil.com")
+	alice.SendLine("MODE #bmask_chan +I *!*@trusted.org")
+	time.Sleep(100 * time.Millisecond)
+
+	ch1 := s1.channels.Get("#bmask_chan")
+	if ch1 == nil {
+		t.Fatalf("channel #bmask_chan not found on s1")
+	}
+
+	// Now start server 2 and link them
+	s2 := createTestServer(t, "200", "srv2.test", nil)
+	linkTestServers(t, s1, s2, nil, nil)
+
+	time.Sleep(150 * time.Millisecond)
+
+	// S2 should have received #bmask_chan with the ban and invite masks in the burst
+	ch2 := s2.channels.Get("#bmask_chan")
+	if ch2 == nil {
+		t.Fatalf("channel #bmask_chan not found on s2 after burst")
+	}
+
+	ch2.stateMutex.RLock()
+	hasBan := ch2.lists[modes.BanMask].Match("spammer!bot@evil.com")
+	hasInvite := ch2.lists[modes.InviteMask].Match("friend!user@trusted.org")
+	ch2.stateMutex.RUnlock()
+
+	if !hasBan {
+		t.Errorf("ban mask *!*@evil.com was not properly synced via BMASK burst to server 2")
+	}
+	if !hasInvite {
+		t.Errorf("invite mask *!*@trusted.org was not properly synced via BMASK burst to server 2")
+	}
+}
+

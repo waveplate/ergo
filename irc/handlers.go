@@ -4872,3 +4872,118 @@ func invalidUtf8Handler(server *Server, client *Client, msg ircmsg.Message, rb *
 	rb.Add(nil, server.name, "FAIL", utils.SafeErrorParam(msg.Command), "INVALID_UTF8", client.t("Message rejected for containing invalid UTF-8"))
 	return false
 }
+
+// LINKS [[<remote_server>] <mask>]
+func linksHandler(server *Server, client *Client, msg ircmsg.Message, rb *ResponseBuffer) bool {
+	mask := "*"
+	if len(msg.Params) > 0 {
+		mask = msg.Params[len(msg.Params)-1]
+	}
+
+	matcher, _ := utils.CompileGlob(mask, false)
+	if server.s2s != nil {
+		for _, node := range server.s2s.AllServers() {
+			if mask != "*" && (matcher == nil || !matcher.MatchString(node.Name)) {
+				continue
+			}
+			uplink := server.name
+			if node.UplinkSID != "" {
+				if upNode := server.s2s.GetServerBySID(node.UplinkSID); upNode != nil {
+					uplink = upNode.Name
+				}
+			}
+			rb.Add(nil, server.name, RPL_LINKS, client.Nick(), mask, node.Name, fmt.Sprintf("%d %s", node.HopCount, node.Description))
+			_ = uplink
+		}
+	} else {
+		rb.Add(nil, server.name, RPL_LINKS, client.Nick(), mask, server.name, fmt.Sprintf("0 %s", server.name))
+	}
+	rb.Add(nil, server.name, RPL_ENDOFLINKS, client.Nick(), mask, client.t("End of LINKS list"))
+	return false
+}
+
+// CONNECT <target_server> [<port> [<remote_server>]]
+func connectHandler(server *Server, client *Client, msg ircmsg.Message, rb *ResponseBuffer) bool {
+	if server.s2s == nil {
+		rb.Notice(client.t("Server linking is not enabled on this server"))
+		return false
+	}
+	target := msg.Params[0]
+	err := server.s2s.ConnectLink(target)
+	if err != nil {
+		rb.Notice(fmt.Sprintf(client.t("Failed to connect to %s: %s"), target, err.Error()))
+	} else {
+		rb.Notice(fmt.Sprintf(client.t("Initiating connection to link %s"), target))
+	}
+	return false
+}
+
+// SQUIT <target_server> :<comment>
+func squitHandler(server *Server, client *Client, msg ircmsg.Message, rb *ResponseBuffer) bool {
+	if server.s2s == nil {
+		rb.Notice(client.t("Server linking is not enabled on this server"))
+		return false
+	}
+	target := msg.Params[0]
+	comment := "Operator SQUIT"
+	if len(msg.Params) > 1 {
+		comment = msg.Params[1]
+	}
+	err := server.s2s.DropLink(target, comment)
+	if err != nil {
+		rb.Notice(fmt.Sprintf(client.t("Failed to disconnect server %s: %s"), target, err.Error()))
+	} else {
+		rb.Notice(fmt.Sprintf(client.t("Server %s disconnected (%s)"), target, comment))
+	}
+	return false
+}
+
+// KNOCK <channel>
+func knockHandler(server *Server, client *Client, msg ircmsg.Message, rb *ResponseBuffer) bool {
+	chname := msg.Params[0]
+	ch := server.channels.Get(chname)
+	if ch == nil {
+		rb.Add(nil, server.name, ERR_NOSUCHCHANNEL, client.Nick(), utils.SafeErrorParam(chname), client.t("No such channel"))
+		return false
+	}
+
+	if ch.hasClient(client) {
+		rb.Add(nil, server.name, "FAIL", "KNOCK", "ALREADY_ON_CHANNEL", ch.Name(), client.t("You are already on that channel"))
+		return false
+	}
+
+	knockNotice := fmt.Sprintf("User %s is knocking on %s", client.NickMaskString(), ch.Name())
+	for _, member := range ch.Members() {
+		if ch.ClientIsAtLeast(member, modes.Halfop) {
+			for _, session := range member.Sessions() {
+				session.Send(nil, server.name, "NOTICE", ch.Name(), knockNotice)
+			}
+		}
+	}
+
+	if server.s2s != nil {
+		server.s2s.BroadcastKnock(client, ch)
+	}
+
+	rb.Add(nil, server.name, "710", client.Nick(), ch.Name(), client.t("Your knock has been delivered"))
+	return false
+}
+
+// WALLOPS :<text>
+func wallopsHandler(server *Server, client *Client, msg ircmsg.Message, rb *ResponseBuffer) bool {
+	text := msg.Params[0]
+	sourceMask := client.NickMaskString()
+
+	for _, c := range server.clients.AllClients() {
+		if !c.IsRemote() && (c.HasMode(modes.WallOps) || c.HasMode(modes.Operator)) {
+			for _, session := range c.Sessions() {
+				session.Send(nil, sourceMask, "WALLOPS", text)
+			}
+		}
+	}
+
+	if server.s2s != nil {
+		server.s2s.BroadcastWallops(client, text)
+	}
+	return false
+}

@@ -138,6 +138,7 @@ type Client struct {
 	nickTS    time.Time
 	isRemote  bool
 	link      *ServerLink
+	certfp    string
 }
 
 type saslStatus struct {
@@ -707,6 +708,20 @@ func (client *Client) Link() *ServerLink {
 	client.stateMutex.RLock()
 	defer client.stateMutex.RUnlock()
 	return client.link
+}
+
+// CertFP returns the client certificate fingerprint if available.
+func (client *Client) CertFP() string {
+	client.stateMutex.RLock()
+	defer client.stateMutex.RUnlock()
+	return client.certfp
+}
+
+// SetCertFP sets the client certificate fingerprint.
+func (client *Client) SetCertFP(fp string) {
+	client.stateMutex.Lock()
+	defer client.stateMutex.Unlock()
+	client.certfp = fp
 }
 
 // NewRemoteClient constructs a Client struct representing a user connected to a remote TS6 server.
