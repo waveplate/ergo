@@ -18,6 +18,8 @@ server:
             sid: "002"
             hostname: ircd-b
             port: 6667
+            # set tls to true to enable TLS/SSL (defaults to port 6697 if port is omitted):
+            # tls: true
             send-password: link-test
             receive-password: link-test
             auto-connect: true
