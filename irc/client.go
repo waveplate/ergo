@@ -839,7 +839,6 @@ func (client *Client) run(session *Session) {
 			if (msg.Command == "PASS" && len(msg.Params) >= 4 && msg.Params[1] == "TS" && msg.Params[2] == "6") ||
 				(msg.Command == "SERVER" && len(msg.Params) >= 3) ||
 				(msg.Command == "CAPAB") {
-				session.client = nil // detach session so client.destroy doesn't close socket
 				client.server.s2s.RunInboundLink(session, line, msg)
 				return
 			}

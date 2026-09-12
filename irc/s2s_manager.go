@@ -486,9 +486,12 @@ func (s2s *S2SManager) HandleServerSplit(targetSID string, reason string) {
 
 // RunInboundLink hands off an accepted connection to ServerLink.
 func (s2s *S2SManager) RunInboundLink(session *Session, firstLine string, firstMsg ircmsg.Message) {
-	// Cancel client registration timer & decrement client stats
-	session.client.registrationTimer.Stop()
-	s2s.server.stats.Remove(false, false, false)
+	// Tear down the temporary client without closing the socket, which is now
+	// owned by the server link.
+	client := session.client
+	client.registrationTimer.Stop()
+	session.client = nil
+	client.destroy(session)
 
 	link := NewServerLink(s2s.server, session.socket.conn, nil, true)
 	go link.WriteLoop()
