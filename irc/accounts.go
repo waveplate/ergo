@@ -1281,8 +1281,8 @@ func (am *AccountManager) SetNickReserved(client *Client, nick string, saUnreser
 	// find the affected account, which is usually the client's:
 	account := client.Account()
 	if saUnreserve {
-		// unless this is a sadrop:
-		account := func() string {
+		// unless this is a sadrop, in which case it's the account that owns the nick:
+		account = func() string {
 			am.RLock()
 			defer am.RUnlock()
 			return am.nickToAccount[cfnick]
